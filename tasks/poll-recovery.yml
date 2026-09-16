@@ -1,0 +1,20 @@
+---
+- name: Reset SSH before polling the current interface recovery job
+  ansible.builtin.meta: reset_connection
+
+- name: Wait for SSH before collecting the recovery result
+  ansible.builtin.wait_for_connection:
+    timeout: "{{ arp_connection_timeout | int }}"
+    sleep: 2
+    connect_timeout: 5
+
+- name: Poll until the router MAC is learned or the job fails
+  ansible.builtin.async_status:
+    jid: "{{ arp_job.ansible_job_id }}"
+  register: arp_result
+  until: arp_result.finished | default(false) | bool
+  retries: "{{ ((arp_recovery_timeout | int) / 2) | round(0, 'ceil') | int + 15 }}"
+  delay: 2
+  # Transport loss returns to the include loop for another connection attempt.
+  # A completed job with nonzero rc remains fatal and is never reported as success.
+  ignore_unreachable: true

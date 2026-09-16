@@ -1,0 +1,59 @@
+---
+- name: Refresh the replaced router's IPv4 ARP entry on Linux servers
+  hosts: arp_targets
+  gather_facts: false
+  vars:
+    arp_recovery_timeout: 120
+    arp_connection_timeout: 180
+
+  tasks:
+    # End this host before any SSH activity when no interfaces were selected.
+    - name: Skip hosts without configured interfaces
+      ansible.builtin.meta: end_host
+      when: arp_interface | default(none) in [none, [], '']
+
+    - name: Validate the interface list and recovery limits
+      ansible.builtin.assert:
+        that:
+          - arp_interface is sequence
+          - arp_interface is not string
+          - arp_interface is not mapping
+          - arp_recovery_timeout | int > 0
+          - arp_connection_timeout | int > 0
+        fail_msg: >-
+          Set arp_interface to a YAML list of interface names, or leave it empty to skip.
+          Received {{ arp_interface | to_json }} ({{ arp_interface | type_debug }}).
+          For command-line overrides, use -e '{"arp_interface":["enp0s5"]}'.
+          Recovery and connection timeouts must also be positive integers.
+
+    - name: Validate each interface name
+      ansible.builtin.assert:
+        that:
+          - arp_selected_interface is string
+          - arp_selected_interface | trim | length > 0
+        fail_msg: Each interface name must be a nonempty string.
+      loop: "{{ arp_interface }}"
+      loop_control:
+        loop_var: arp_selected_interface
+
+    - name: Wait for initial SSH access before inspecting the interface
+      ansible.builtin.wait_for_connection:
+        timeout: "{{ arp_connection_timeout | int }}"
+        sleep: 2
+
+    - name: Discover the remote Python interpreter and operating system
+      ansible.builtin.setup:
+        gather_subset: ["!all", "!min", "python", "system"]
+
+    - name: Require Linux for iproute2 neighbour operations
+      ansible.builtin.assert:
+        that: ansible_facts.system == 'Linux'
+
+    # Complete recovery for one interface before starting the next. A dedicated
+    # loop variable keeps the configured list separate from the current name.
+    - name: Refresh each selected interface and verify its recovery
+      ansible.builtin.include_tasks: tasks/refresh-interface.yml
+      loop: "{{ arp_interface | unique(case_sensitive=true) }}"
+      loop_control:
+        loop_var: arp_current_interface
+        label: "{{ arp_current_interface }}"
